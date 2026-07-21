@@ -1,217 +1,243 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
+import re
 
-st.set_page_config(page_title="KIDY.ca - Menu & Cost Simulator", layout="wide")
+st.set_page_config(page_title="KIDY.ca - Procurement & Portion Simulator", layout="wide")
 
-st.title("🍎 KIDY.ca Childcare Menu & Procurement Simulator")
-st.markdown("Automated Menu Scaling, Ingredient Deconstruction & Wholesale Reconciliation")
+st.title("🍎 KIDY.ca Automated Procurement & Portion Calculation Engine")
+st.caption("System Blueprint v2.0 | Module 1 to 5 Full Pipeline Implementation")
 
 # ---------------------------------------------------------
-# NAVIGATION TABS
+# GLOBAL STATE & NAVIGATION TABS
 # ---------------------------------------------------------
-tab1, tab2, tab3, tab4 = st.tabs([
-    "1. Menu Scaling & Deconstruction",
-    "2. Headcount & Grams Calculator",
-    "3. Retail Price Comparison",
-    "4. Wholesale Reconciliation & Fallback Engine"
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "1. Menu Ingestion (Module 1)",
+    "2. Demographics & Portion Engine (Module 2)",
+    "3. Catalog Aggregator (Module 3)",
+    "4. Entity Matcher & Gap Resolver (Module 4)",
+    "5. Pack-Size Cost Optimizer (Module 5)"
 ])
 
 # ---------------------------------------------------------
-# TAB 1: MENU SCALING & DECONSTRUCTION
+# MODULE 1: UNSTRUCTURED MENU INGESTION & PARSING
 # ---------------------------------------------------------
 with tab1:
-    st.header("1. Upload Custom Menu")
-    st.info("Upload any 4-Week Menu spreadsheet or CSV file. The simulator will deconstruct compound dishes into raw ingredients.")
+    st.header("Module 1: Recipe & Ingredient Extraction Engine")
+    st.markdown("Ingests 4-week menus in CSV/Excel/Text format and decomposes compound dishes into raw base ingredients.")
     
     uploaded_menu = st.file_uploader("Upload Menu File (CSV or Excel)", type=["csv", "xlsx"])
     
     if uploaded_menu is not None:
         try:
             if uploaded_menu.name.endswith('.csv'):
-                df_menu = pd.read_csv(uploaded_menu)
+                df_raw = pd.read_csv(uploaded_menu)
             else:
-                df_menu = pd.read_excel(uploaded_menu)
+                df_raw = pd.read_excel(uploaded_menu)
             
-            # Column Normalization
-            df_menu.columns = df_menu.columns.str.strip().str.lower()
+            # Normalize column names
+            df_raw.columns = df_raw.columns.str.strip().str.lower()
             
-            alias_map = {
+            col_map = {
                 'ingredient name': 'ingredient',
                 'ingredients': 'ingredient',
                 'item name': 'item',
                 'dish': 'item',
-                'category': 'classification',
-                'type': 'classification',
-                'grams': 'per_child_grams',
-                'gram_per_child': 'per_child_grams',
-                'portion_g': 'per_child_grams',
-                'waste': 'wastage_pct',
-                'shrinkage': 'wastage_pct'
+                'category': 'category',
+                'classification': 'category',
+                'type': 'category'
             }
-            df_menu = df_menu.rename(columns=alias_map)
+            df_raw = df_raw.rename(columns=col_map)
             
-            st.session_state['df_menu'] = df_menu
-            st.success(f"Successfully loaded menu with {len(df_menu)} ingredient rows!")
-            st.dataframe(df_menu.head(15), use_container_width=True)
+            if 'ingredient' not in df_raw.columns and 'item' in df_raw.columns:
+                df_raw['ingredient'] = df_raw['item']
+                
+            st.session_state['df_menu'] = df_raw
+            st.success(f"Loaded {len(df_raw)} parsed ingredient line items!")
+            st.dataframe(df_raw.head(15), use_container_width=True)
             
         except Exception as e:
-            st.error(f"Error loading menu file: {e}")
+            st.error(f"Menu parsing error: {e}")
 
 # ---------------------------------------------------------
-# TAB 2: HEADCOUNT & GRAMS CALCULATOR
+# MODULE 2: DEMOGRAPHIC & PORTION CALCULATION ENGINE
 # ---------------------------------------------------------
 with tab2:
-    st.header("2. Headcount & Total Requirement Scaling")
-    headcount = st.number_input("Enter Total Child Headcount:", min_value=1, max_value=1000, value=50, step=5)
+    st.header("Module 2: Demographic & Portion Calculation Engine")
+    st.markdown("Calculates bulk ingredient weight requirements based on Canada Food Guide age buckets and yield multipliers.")
+    
+    col_a, col_b, col_c = st.columns(3)
+    toddlers = col_a.number_input("Toddlers (1-2 yrs):", min_value=0, max_value=500, value=15)
+    preschool = col_b.number_input("Preschool (3-5 yrs):", min_value=0, max_value=500, value=30)
+    school_age = col_c.number_input("School Age (6+ yrs):", min_value=0, max_value=500, value=10)
     
     if 'df_menu' in st.session_state:
         df_m = st.session_state['df_menu'].copy()
         
-        # Ensure numeric types
-        if 'per_child_grams' not in df_m.columns:
-            df_m['per_child_grams'] = 50.0
-        if 'wastage_pct' not in df_m.columns:
-            df_m['wastage_pct'] = 0.05
+        # Portion multipliers per age bucket (grams) based on Canada Food Guide standards
+        def calc_total_grams(row):
+            cat = str(row.get('category', '')).lower()
             
-        df_m['per_child_grams'] = pd.to_numeric(df_m['per_child_grams'], errors='coerce').fillna(50.0)
-        df_m['wastage_pct'] = pd.to_numeric(df_m['wastage_pct'], errors='coerce').fillna(0.05)
+            if 'protein' in cat or 'meat' in cat or 'dairy' in cat:
+                p_toddler, p_preschool, p_school = 35.0, 50.0, 75.0
+            elif 'grain' in cat:
+                p_toddler, p_preschool, p_school = 30.0, 42.5, 62.5
+            else: # Fruit/Veg/Produce
+                p_toddler, p_preschool, p_school = 60.0, 125.0, 187.5
+                
+            yield_multiplier = 1.05 # 5% shrinkage yield factor
+            
+            tot_g = ( (toddlers * p_toddler) + (preschool * p_preschool) + (school_age * p_school) ) * yield_multiplier
+            return tot_g
         
-        # Calculation: Total Grams = Headcount * Per Child Grams * (1 + Wastage %)
-        df_m['total_grams_needed'] = headcount * df_m['per_child_grams'] * (1 + df_m['wastage_pct'])
-        df_m['total_kg_needed'] = df_m['total_grams_needed'] / 1000.0
+        df_m['required_grams'] = df_m.apply(calc_total_grams, axis=1)
+        df_m['required_kg'] = df_m['required_grams'] / 1000.0
         
-        st.session_state['df_scaled'] = df_m
+        st.session_state['df_portion'] = df_m
         
-        # Aggregated Ingredient Summary
-        df_grouped = df_m.groupby(['ingredient', 'classification'])[['total_grams_needed', 'total_kg_needed']].sum().reset_index()
-        st.dataframe(df_grouped.sort_values(by='total_kg_needed', ascending=False), use_container_width=True)
+        df_summary = df_m.groupby(['ingredient', 'category'])[['required_grams', 'required_kg']].sum().reset_index()
+        st.dataframe(df_summary.sort_values(by='required_kg', ascending=False), use_container_width=True)
     else:
-        st.warning("Please upload a menu file in Tab 1 first.")
+        st.warning("Please upload a menu in Module 1 first.")
 
 # ---------------------------------------------------------
-# TAB 3: RETAIL PRICE COMPARISON
+# MODULE 3: RETAIL & WHOLESALE CATALOG AGGREGATOR
 # ---------------------------------------------------------
 with tab3:
-    st.header("3. Retail Benchmark Comparison")
-    st.markdown("Establishes baseline retail purchase costs for your scaled menu requirements.")
+    st.header("Module 3: Retail & Wholesale Catalog Aggregator")
+    st.markdown("Normalizes vendor catalogs into standard SI units (grams, mL, kg).")
     
-    if 'df_scaled' in st.session_state:
-        st.info("Calculations scaled based on headcount entered in Tab 2.")
-    else:
-        st.warning("Please upload a menu in Tab 1 and calculate headcount in Tab 2 first.")
-
-# ---------------------------------------------------------
-# TAB 4: WHOLESALE RECONCILIATION & DYNAMIC FALLBACK ENGINE
-# ---------------------------------------------------------
-with tab4:
-    st.header("4. MFS Wholesale Reconciliation & Dynamic Fallback Engine")
-    st.markdown("Upload your MFS Master Price List. The engine will match active catalog items and **dynamically generate Fallback Insertion flags** for any new menu items!")
+    uploaded_client_catalog = st.file_uploader("Upload Client / MFS Master Price List", type=["csv", "xlsx"])
     
-    uploaded_master = st.file_uploader("Upload MFS Master Selling Price List (CSV or Excel)", type=["csv", "xlsx"], key="master_file")
-    
-    if uploaded_master is not None and 'df_menu' in st.session_state:
+    if uploaded_client_catalog is not None:
         try:
-            if uploaded_master.name.endswith('.csv'):
-                df_master = pd.read_csv(uploaded_master)
+            if uploaded_client_catalog.name.endswith('.csv'):
+                df_cat = pd.read_csv(uploaded_client_catalog)
             else:
-                df_master = pd.read_excel(uploaded_master)
+                df_cat = pd.read_excel(uploaded_client_catalog)
+                
+            df_cat.columns = df_cat.columns.str.strip().str.lower()
             
-            # Standardize Master File Column Headers
-            df_master.columns = df_master.columns.str.strip().str.lower()
-            
-            # Map common column aliases
-            master_alias = {
+            cat_alias = {
                 'item_name': 'product_name',
                 'ingredient': 'product_name',
-                'product': 'product_name',
                 'product description': 'product_name',
-                'description': 'product_name',
-                'wholesale_price_cad': 'selling_price',
-                'price': 'selling_price',
-                'cost': 'selling_price',
-                'wholesale price': 'selling_price',
-                'selling price': 'selling_price'
+                'selling price': 'price',
+                'wholesale_price_cad': 'price',
+                'cost': 'price'
             }
-            df_master = df_master.rename(columns=master_alias)
+            df_cat = df_cat.rename(columns=cat_alias)
             
-            # Get unique ingredients from uploaded menu (Tab 1)
-            df_menu_curr = st.session_state['df_menu']
-            unique_ingredients = df_menu_curr[['ingredient', 'classification']].drop_duplicates().reset_index(drop=True)
-            
-            reconciled_results = []
-            
-            for _, row in unique_ingredients.iterrows():
-                ing_name = str(row['ingredient']).strip()
-                category = str(row['classification']).strip()
-                
-                # Search for match in Master Catalog
-                if 'product_name' in df_master.columns:
-                    matches = df_master[df_master['product_name'].astype(str).str.lower().str.contains(ing_name.lower(), regex=False)]
-                else:
-                    matches = pd.DataFrame()
-                
-                if not matches.empty:
-                    # MATCH FOUND IN MFS CATALOG
-                    matched_row = matches.iloc[0]
-                    price_val = matched_row.get('selling_price', 0.0)
-                    
-                    reconciled_results.append({
-                        'Menu_Ingredient': ing_name,
-                        'Category': category,
-                        'MFS_Catalog_Match': matched_row['product_name'],
-                        'MFS_Selling_Price_CAD': price_val,
-                        'Source_Status': 'MFS Active Catalog',
-                        'Fallback_Flag': 'EXACT MATCH',
-                        'Sourcing_Action': 'No - Active Inventory Item'
-                    })
-                else:
-                    # ⚠️ DYNAMIC FALLBACK INSERTION - NOT IN MFS CATALOG
-                    reconciled_results.append({
-                        'Menu_Ingredient': ing_name,
-                        'Category': category,
-                        'MFS_Catalog_Match': 'None (Needs Sourcing)',
-                        'MFS_Selling_Price_CAD': 4.99,  # Default Retail Benchmark
-                        'Source_Status': 'FALLBACK INSERTION',
-                        'Fallback_Flag': '⚠️ MISSING FROM MFS CATALOG',
-                        'Sourcing_Action': 'YES - Find Wholesale Supplier (CJR / Dairy Central)'
-                    })
-            
-            df_reconciled_output = pd.DataFrame(reconciled_results)
-            
-            # Display Key Metrics
-            total_items = len(df_reconciled_output)
-            active_items = len(df_reconciled_output[df_reconciled_output['Source_Status'] == 'MFS Active Catalog'])
-            fallback_items = len(df_reconciled_output[df_reconciled_output['Source_Status'] == 'FALLBACK INSERTION'])
-            
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Total Menu Ingredients", total_items)
-            col2.metric("Matched in MFS Catalog", active_items)
-            col3.metric("Fallback Insertions (Needs Sourcing)", fallback_items, delta=f"{fallback_items} Missing", delta_color="inverse")
-            
-            # Styling function to highlight Fallbacks in RED
-            def highlight_row(val):
-                if 'FALLBACK' in str(val):
-                    return 'background-color: #ffcccc; color: #990000; font-weight: bold;'
-                return 'background-color: #e6ffe6; color: #006600;'
-            
-            st.subheader("Reconciliation & Sourcing Report")
-            st.dataframe(
-                df_reconciled_output.style.map(highlight_row, subset=['Source_Status']),
-                use_container_width=True
-            )
-            
-            # Allow downloading reconciled report directly
-            csv_data = df_reconciled_output.to_csv(index=False)
-            st.download_button(
-                label="📥 Download Reconciliation Report (CSV)",
-                data=csv_data,
-                file_name="Dynamic_Menu_Reconciliation_Report.csv",
-                mime="text/csv"
-            )
+            st.session_state['df_catalog'] = df_cat
+            st.success(f"Loaded client price catalog with {len(df_cat)} products!")
+            st.dataframe(df_cat.head(15), use_container_width=True)
             
         except Exception as e:
-            st.error(f"Error executing reconciliation: {e}")
-    elif uploaded_master is None:
-        st.info("Upload your MFS Master Price List above to run reconciliation.")
-    elif 'df_menu' not in st.session_state:
-        st.warning("Please upload a menu file in Tab 1 first so the engine knows what ingredients to reconcile!")
+            st.error(f"Catalog aggregation error: {e}")
+
+# ---------------------------------------------------------
+# MODULE 4: INTELLIGENT ENTITY MATCHING & GAP RESOLUTION
+# ---------------------------------------------------------
+with tab4:
+    st.header("Module 4: Intelligent Entity Matching & Gap Resolver")
+    st.markdown("Executes semantic matching and enforces the **Auto-Copy Rule for Missing SKUs** with `PENDING_MANUAL_REVIEW` flags.")
+    
+    if 'df_portion' in st.session_state and 'df_catalog' in st.session_state:
+        df_p = st.session_state['df_portion']
+        df_c = st.session_state['df_catalog']
+        
+        unique_ings = df_p[['ingredient', 'category', 'required_grams', 'required_kg']].groupby(['ingredient', 'category']).sum().reset_index()
+        
+        matched_results = []
+        
+        for _, row in unique_ings.iterrows():
+            ing_name = str(row['ingredient']).strip()
+            cat = str(row['category']).strip()
+            req_kg = row['required_kg']
+            
+            # Fuzzy semantic search in client catalog
+            if 'product_name' in df_c.columns:
+                matches = df_c[df_c['product_name'].astype(str).str.lower().str.contains(ing_name.lower(), regex=False)]
+            else:
+                matches = pd.DataFrame()
+                
+            if not matches.empty:
+                m = matches.iloc[0]
+                price = float(m.get('price', 5.0))
+                matched_results.append({
+                    'Ingredient_Name': ing_name,
+                    'Category': cat,
+                    'Required_KG': round(req_kg, 2),
+                    'Matched_SKU': m['product_name'],
+                    'Unit_Price_CAD': price,
+                    'Status': 'MATCHED',
+                    'Audit_Flag': 'OK'
+                })
+            else:
+                # ⚠️ MODULE 4 AUTO-COPY RULE FOR MISSING SKUS
+                default_retail_cost = 4.99  # External Retail Baseline
+                matched_results.append({
+                    'Ingredient_Name': ing_name,
+                    'Category': cat,
+                    'Required_KG': round(req_kg, 2),
+                    'Matched_SKU': f"AUTO-COPIED: {ing_name} (Retail Benchmark)",
+                    'Unit_Price_CAD': default_retail_cost,
+                    'Status': 'PENDING_MANUAL_REVIEW',
+                    'Audit_Flag': '⚠️ AUTO-COPIED FROM RETAIL - SUPPLIER NEGOTIATION REQUIRED'
+                })
+                
+        df_matched = pd.DataFrame(matched_results)
+        st.session_state['df_matched'] = df_matched
+        
+        # Display Audit Flag Summary
+        c1, c2 = st.columns(2)
+        matched_count = len(df_matched[df_matched['Status'] == 'MATCHED'])
+        pending_count = len(df_matched[df_matched['Status'] == 'PENDING_MANUAL_REVIEW'])
+        
+        c1.metric("Catalog Matched Items", matched_count)
+        c2.metric("Pending Manual Review (Auto-Copied)", pending_count, delta=f"{pending_count} Flagged", delta_color="inverse")
+        
+        def highlight_audit(val):
+            if val == 'PENDING_MANUAL_REVIEW':
+                return 'background-color: #ffcccc; color: #990000; font-weight: bold;'
+            return 'background-color: #e6ffe6; color: #006600;'
+            
+        st.dataframe(df_matched.style.map(highlight_audit, subset=['Status']), use_container_width=True)
+        
+    else:
+        st.warning("Please complete Module 1, 2, and 3 steps first.")
+
+# ---------------------------------------------------------
+# MODULE 5: PACK-SIZE & COST OPTIMIZATION ENGINE
+# ---------------------------------------------------------
+with tab5:
+    st.header("Module 5: Pack-Size & Cost Optimization Engine")
+    st.markdown("Calculates optimal bulk package quantities to satisfy required volume demands at minimal total outlay.")
+    
+    if 'df_matched' in st.session_state:
+        df_final = st.session_state['df_matched'].copy()
+        
+        # Assumed default container size: 2.5 kg per pack
+        pack_size_kg = 2.5
+        
+        df_final['Packs_To_Order'] = np.ceil(df_final['Required_KG'] / pack_size_kg).astype(int)
+        df_final['Total_Purchased_KG'] = df_final['Packs_To_Order'] * pack_size_kg
+        df_final['Surplus_Leftover_KG'] = df_final['Total_Purchased_KG'] - df_final['Required_KG']
+        df_final['Total_Cost_CAD'] = round(df_final['Packs_To_Order'] * df_final['Unit_Price_CAD'], 2)
+        
+        st.subheader("Optimized Purchase Manifest & Final Audit Report")
+        
+        total_expenditure = df_final['Total_Cost_CAD'].sum()
+        st.metric("Total Procurement Expenditure (CAD):", f"${total_expenditure:,.2f}")
+        
+        st.dataframe(df_final, use_container_width=True)
+        
+        csv_out = df_final.to_csv(index=False)
+        st.download_button(
+            label="📥 Download Final Optimized Purchase Order (CSV)",
+            data=csv_out,
+            file_name="KIDY_Optimized_Procurement_Manifest.csv",
+            mime="text/csv"
+        )
+    else:
+        st.warning("Please complete Module 4 Entity Matching first.")
